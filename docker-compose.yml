@@ -1,0 +1,22 @@
+# Local development database. Tests don't use this — they spin up their own
+# PostGIS via Testcontainers (backend) / @testcontainers/postgresql (e2e).
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: crenow-db
+    environment:
+      POSTGRES_DB: crenow
+      POSTGRES_USER: crenow
+      POSTGRES_PASSWORD: crenow
+    ports:
+      - "5432:5432"
+    volumes:
+      - crenow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crenow -d crenow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  crenow-db-data:

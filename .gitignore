@@ -1,0 +1,27 @@
+# ── Node / pnpm / Turbo ──
+node_modules/
+.turbo/
+dist/
+*.tsbuildinfo
+
+# Generated API client (produced from shared/openapi/openapi.yaml by `pnpm generate`)
+shared/openapi/src/generated/
+
+# ── Gradle / Java ──
+.gradle/
+backend/build/
+backend/.gradle/
+
+# ── Expo / React Native ──
+.expo/
+apps/mobile/.expo/
+
+# ── Env / secrets ──
+.env
+.env.local
+*.local
+
+# ── Editor / OS ──
+.idea/
+.vscode/
+.DS_Store

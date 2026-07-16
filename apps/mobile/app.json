@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Crenow",
+    "slug": "crenow",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "crenow",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "extra": {
+      "apiBaseUrl": "http://localhost:8080/v1"
+    }
+  }
+}
