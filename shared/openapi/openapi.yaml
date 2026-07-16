@@ -1,0 +1,872 @@
+openapi: 3.1.0
+info:
+  title: Crenow API
+  version: 0.1.0
+  description: |
+    Contrat d'API Crenow — **tranche traceuse** :
+    `alerte → découverte → détail créneau → réservation solo directe → paiement Stripe → confirmation`.
+
+    Langage du contrat : **anglais** (domaine français, voir CONTEXT.md § « Correspondance FR → EN », ADR 0013).
+    Conventions : IDs opaques (UUIDv7 côté serveur) · erreurs RFC 9457 `application/problem+json` avec `code` machine ·
+    montants en unités mineures (`Money`) · horodatages RFC 3339 UTC + fuseau IANA · pagination curseur ·
+    `Idempotency-Key` sur les POST créateurs.
+
+    Le webhook Stripe (`/internal/webhooks/stripe`) est **hors de ce contrat client** (server-to-server, ADR 0016).
+  contact:
+    name: Crenow
+
+servers:
+  - url: https://api.crenow.com/v1
+    description: Production
+  - url: http://localhost:8080/v1
+    description: Local
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Discovery
+    description: Découverte publique (recherche + flux d'accueil composé serveur).
+  - name: Slots
+    description: Créneaux réservables.
+  - name: Bookings
+    description: Réservations et orchestration de paiement.
+  - name: Alerts
+    description: Alertes — intentions durables.
+  - name: Account
+    description: Identité de l'utilisateur et vérification du téléphone.
+  - name: Config
+    description: Configuration publique du client.
+
+paths:
+  # ─────────────────────────────── Config ───────────────────────────────
+  /config:
+    get:
+      tags: [Config]
+      summary: Configuration publique du client
+      description: Clé publiable Stripe et autres constantes non secrètes. Sert à éviter de figer la clé dans les apps (rotation, bascule test↔live).
+      operationId: getConfig
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+
+  # ─────────────────────────────── Discovery ────────────────────────────
+  /discovery:
+    get:
+      tags: [Discovery]
+      summary: Flux d'accueil composé par le serveur
+      description: |
+        Renvoie des sections labellisées (« Dispo ce soir », « Ce week-end », …). Le serveur porte la logique
+        fourni → maigre → vide (ADR 0014). Quand aucune section n'est disponible, `suggestedAlert` est renseigné
+        (préremplissage zone + catégorie) → bascule « préviens-moi » en un `POST /alerts`.
+        Bearer optionnel : personnalise si présent, fonctionne sans (ADR — auth boundary).
+      operationId: getDiscovery
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Lat'
+        - $ref: '#/components/parameters/Lng'
+        - $ref: '#/components/parameters/RadiusMeters'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ──────────────────────────────── Slots ───────────────────────────────
+  /slots:
+    get:
+      tags: [Slots, Discovery]
+      summary: Recherche de créneaux
+      description: Recherche générique géo + filtres, pagination curseur. Alimente l'écran de recherche/filtres.
+      operationId: searchSlots
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Lat'
+        - $ref: '#/components/parameters/Lng'
+        - $ref: '#/components/parameters/RadiusMeters'
+        - name: categoryId
+          in: query
+          schema: { type: string }
+        - name: subtypeId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Borne basse (début de créneau), RFC 3339.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Borne haute (début de créneau), RFC 3339.
+          schema: { type: string, format: date-time }
+        - name: maxPricePerSpot
+          in: query
+          description: Plafond comparé au `pricePerSpot` (unités mineures, EUR).
+          schema: { type: integer, minimum: 0 }
+        - name: minRemainingSpots
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlotPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /slots/{slotId}:
+    get:
+      tags: [Slots]
+      summary: Détail d'un créneau
+      description: Représentation complète (variant, activityTemplate, venue→partner embarqués). Termes engageants dénormalisés sur le Slot (ADR 0014).
+      operationId: getSlot
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SlotId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Slot'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────── Account ──────────────────────────────
+  /me:
+    get:
+      tags: [Account]
+      summary: Identité de l'utilisateur courant
+      operationId: getMe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /phone-verifications:
+    post:
+      tags: [Account]
+      summary: Démarrer la vérification du téléphone
+      description: Wrapper Twilio Verify (start). Découplé du login (ADR 0008) ; requis au 1er paiement.
+      operationId: startPhoneVerification
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneVerificationStart'
+      responses:
+        '202':
+          description: Code envoyé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneVerificationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /phone-verifications/check:
+    post:
+      tags: [Account]
+      summary: Vérifier le code du téléphone
+      description: Wrapper Twilio Verify (check). Succès → `me.phoneVerified = true`.
+      operationId: checkPhoneVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneVerificationCheck'
+      responses:
+        '200':
+          description: Vérifié
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Code invalide ou expiré
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  # ─────────────────────────────── Bookings ─────────────────────────────
+  /bookings:
+    get:
+      tags: [Bookings]
+      summary: Mes réservations
+      operationId: listBookings
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Bookings]
+      summary: Créer une réservation solo directe
+      description: |
+        Crée le `Booking` (pending_payment) **et** le PaymentIntent Stripe (`manual`, destination charge,
+        `application_fee`) en un appel ; renvoie `payment.clientSecret`. Le client autorise ensuite le PaymentIntent
+        (PaymentSheet), puis appelle `POST /bookings/{id}/confirm` (ADR 0016).
+        Précondition : téléphone vérifié → sinon `422 phone_verification_required` (ADR 0008).
+      operationId: createBooking
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCreate'
+      responses:
+        '201':
+          description: Réservation créée, en attente d'autorisation de paiement
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            Créneau indisponible / déjà attribué. `code`: `slot_unavailable` | `slot_already_claimed`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: |
+            Précondition non satisfaite. `code`: `phone_verification_required`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /bookings/{bookingId}:
+    get:
+      tags: [Bookings]
+      summary: Détail d'une réservation
+      description: Canal de réconciliation. Porte toujours `bookingStatus` **et** `paymentStatus` (séparés).
+      operationId: getBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /bookings/{bookingId}/confirm:
+    post:
+      tags: [Bookings]
+      summary: Finaliser (claim + capture) après autorisation
+      description: |
+        Appelé par le client juste après l'autorisation côté client. Exécute claim (verrou sérialisé, ADR 0011)
+        puis capture, **synchrone et idempotent**, et renvoie le `Booking` résolu. Le webhook Stripe exécute la
+        même routine en filet de sécurité si le client ne rappelle pas (ADR 0016).
+        Échec de claim → `bookingStatus: failed`, `paymentStatus: authorization_cancelled`, `suggestedAlert` de rebond.
+      operationId: confirmBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Réservation résolue (confirmée ou échouée gracieusement)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingConfirmResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            État incompatible avec la finalisation (ex. paiement non autorisé). `code`: `booking_not_authorized` | `booking_expired`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  # ──────────────────────────────── Alerts ──────────────────────────────
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: Mes alertes
+      operationId: listAlerts
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Alert'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Alerts]
+      summary: Créer une alerte
+      description: |
+        Cible aussi du rebond `suggestedAlert` (état vide découverte, échec de réservation). `maxPrice` se compare
+        au `pricePerSpot` (ADR 0015).
+      operationId: createAlert
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertCreate'
+      responses:
+        '201':
+          description: Alerte créée
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /alerts/{alertId}:
+    delete:
+      tags: [Alerts]
+      summary: Supprimer une alerte
+      operationId: deleteAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '204':
+          description: Supprimée
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Jeton OIDC (resource server, ADR 0008).
+
+  parameters:
+    SlotId:
+      name: slotId
+      in: path
+      required: true
+      schema: { type: string }
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema: { type: string }
+    AlertId:
+      name: alertId
+      in: path
+      required: true
+      schema: { type: string }
+    Lat:
+      name: lat
+      in: query
+      required: true
+      schema: { type: number, format: double, minimum: -90, maximum: 90 }
+    Lng:
+      name: lng
+      in: query
+      required: true
+      schema: { type: number, format: double, minimum: -180, maximum: 180 }
+    RadiusMeters:
+      name: radiusMeters
+      in: query
+      description: Rayon de recherche (PostGIS ST_DWithin).
+      schema: { type: integer, minimum: 100, maximum: 100000, default: 5000 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Curseur opaque renvoyé par la page précédente.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Clé d'idempotence (UUID) — rejoue la même réponse sur retry.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Authentification requise ou invalide
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    # ── Primitives ──
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: integer
+          description: Montant en unités mineures (centimes).
+        currency:
+          type: string
+          description: Code ISO 4217.
+          examples: [EUR]
+      additionalProperties: false
+
+    GeoPoint:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat: { type: number, format: double }
+        lng: { type: number, format: double }
+      additionalProperties: false
+
+    Problem:
+      description: Erreur RFC 9457.
+      type: object
+      properties:
+        type: { type: string, format: uri, default: about:blank }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          description: |
+            Code machine stable. Ex. `phone_verification_required`, `slot_already_claimed`,
+            `slot_unavailable`, `payment_authorization_failed`, `booking_not_authorized`, `booking_expired`,
+            `validation_error`.
+        errors:
+          type: array
+          description: Détail des erreurs de validation champ par champ.
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    # ── Enums ──
+    BookingType:
+      type: string
+      enum: [direct, request]
+      description: '`direct` = confirmé immédiatement · `request` = à confirmer par le partenaire.'
+    SlotMode:
+      type: string
+      enum: [exclusive, shared]
+      description: V1 = `exclusive` uniquement (`shared` post-V1, ADR 0011).
+    PricingModel:
+      type: string
+      enum: [per_slot, per_spot]
+      description: Unité de prix de la variante (ADR 0015).
+    CancellationPolicy:
+      type: string
+      enum: [flexible, standard, strict, non_refundable]
+      description: Barème binaire (ADR 0012). Seuils 24h / 12h / 3h / aucun.
+    SlotStatus:
+      type: string
+      enum: [available, claimed, closed]
+    BookingStatus:
+      type: string
+      description: État métier (séparé du paiement, note Bloc 29 §52.2).
+      enum:
+        - pending_payment
+        - pending_partner_confirmation
+        - confirmed
+        - rejected
+        - expired
+        - cancelled_by_user_before_confirmation
+        - cancelled_by_user_after_confirmation
+        - cancelled_by_partner
+        - completed
+        - no_show
+        - failed
+    PaymentStatus:
+      type: string
+      description: État financier (séparé de la réservation, note Bloc 29 §52.3).
+      enum:
+        - not_required
+        - pending_authorization
+        - authorized
+        - authorization_cancelled
+        - capture_pending
+        - captured
+        - capture_failed
+        - refund_pending
+        - refunded
+        - payment_failed
+
+    # ── Taxonomie & partenaire ──
+    Category:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Subtype:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Partner:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    VenueRef:
+      description: Vue légère de l'établissement pour les listes.
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        distanceMeters:
+          type: [integer, 'null']
+          description: Distance depuis le point de recherche, si géo fournie.
+    Venue:
+      type: object
+      required: [id, name, location, timezone, partner]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        address: { type: string }
+        location: { $ref: '#/components/schemas/GeoPoint' }
+        timezone:
+          type: string
+          description: Fuseau IANA (ex. Europe/Paris).
+        partner: { $ref: '#/components/schemas/Partner' }
+
+    ActivityTemplate:
+      description: Contexte d'affichage (base réutilisable). Les termes engageants vivent sur le Slot (ADR 0014).
+      type: object
+      required: [id, title, category]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        category: { $ref: '#/components/schemas/Category' }
+        subtype: { $ref: '#/components/schemas/Subtype' }
+        description: { type: string }
+
+    Variant:
+      type: object
+      required: [id, name, durationMinutes, capacity, pricingModel, price]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        durationMinutes: { type: integer, minimum: 1 }
+        level: { type: string }
+        capacity: { type: integer, minimum: 1 }
+        minParticipants:
+          type: integer
+          minimum: 1
+          description: Seuil de viabilité (arbitre de confirmation d'un groupe, CONTEXT.md).
+        maxParticipants: { type: integer, minimum: 1 }
+        pricingModel: { $ref: '#/components/schemas/PricingModel' }
+        price:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Prix canonique selon `pricingModel`.
+
+    # ── Slot ──
+    SlotSummary:
+      description: Carte de liste (recherche, sections découverte).
+      type: object
+      required:
+        [id, title, startsAt, endsAt, timezone, bookingType, mode, status,
+         totalPrice, pricePerSpot, capacity, remainingSpots, venue]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        timezone: { type: string, description: Fuseau IANA du lieu. }
+        bookingType: { $ref: '#/components/schemas/BookingType' }
+        mode: { $ref: '#/components/schemas/SlotMode' }
+        status: { $ref: '#/components/schemas/SlotStatus' }
+        pricingModel: { $ref: '#/components/schemas/PricingModel' }
+        totalPrice:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Prix du créneau entier (calculé serveur).
+        pricePerSpot:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Prix par place (calculé serveur).
+        capacity: { type: integer, minimum: 1 }
+        remainingSpots: { type: integer, minimum: 0 }
+        venue: { $ref: '#/components/schemas/VenueRef' }
+        thumbnailUrl: { type: [string, 'null'], format: uri }
+
+    Slot:
+      description: |
+        Détail complet. Termes engageants (`bookingType`, `mode`, `cancellationPolicy`, prix, `capacity`,
+        `minParticipants`) **dénormalisés et figés à la publication** sur le Slot (ADR 0014) ; `variant` /
+        `activityTemplate` restent pour le contexte d'affichage.
+      type: object
+      required:
+        [id, title, startsAt, endsAt, timezone, bookingType, mode, status,
+         cancellationPolicy, pricingModel, totalPrice, pricePerSpot,
+         capacity, remainingSpots, minParticipants, variant, activityTemplate, venue]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        timezone: { type: string }
+        bookingType: { $ref: '#/components/schemas/BookingType' }
+        mode: { $ref: '#/components/schemas/SlotMode' }
+        status: { $ref: '#/components/schemas/SlotStatus' }
+        cancellationPolicy: { $ref: '#/components/schemas/CancellationPolicy' }
+        pricingModel: { $ref: '#/components/schemas/PricingModel' }
+        totalPrice: { $ref: '#/components/schemas/Money' }
+        pricePerSpot: { $ref: '#/components/schemas/Money' }
+        capacity: { type: integer, minimum: 1 }
+        remainingSpots: { type: integer, minimum: 0 }
+        minParticipants: { type: integer, minimum: 1 }
+        variant: { $ref: '#/components/schemas/Variant' }
+        activityTemplate: { $ref: '#/components/schemas/ActivityTemplate' }
+        venue: { $ref: '#/components/schemas/Venue' }
+        photos:
+          type: array
+          items: { type: string, format: uri }
+
+    SlotPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SlotSummary' }
+        nextCursor: { type: [string, 'null'] }
+
+    # ── Discovery ──
+    DiscoverySection:
+      type: object
+      required: [key, title, slots]
+      properties:
+        key:
+          type: string
+          description: Clé stable (ex. `tonight`, `this_weekend`, `followed`, `groups_to_complete`).
+        title: { type: string }
+        slots:
+          type: array
+          items: { $ref: '#/components/schemas/SlotSummary' }
+    DiscoveryResponse:
+      type: object
+      required: [sections]
+      properties:
+        sections:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoverySection' }
+        suggestedAlert:
+          description: Préremplissage d'alerte quand le flux est vide (ADR 0014). Null sinon.
+          oneOf:
+            - { $ref: '#/components/schemas/AlertCreate' }
+            - { type: 'null' }
+
+    # ── Bookings ──
+    BookingCreate:
+      type: object
+      required: [slotId]
+      properties:
+        slotId:
+          type: string
+          description: Solo direct = créneau entier. Les champs `groupId`/`spots` viendront avec la tranche groupe.
+      additionalProperties: false
+
+    Booking:
+      type: object
+      required: [id, slotId, bookingStatus, paymentStatus, spots, amount, createdAt]
+      properties:
+        id: { type: string }
+        slotId: { type: string }
+        bookingStatus: { $ref: '#/components/schemas/BookingStatus' }
+        paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+        spots: { type: integer, minimum: 1 }
+        amount:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Montant de cette réservation (solo direct = `totalPrice` du créneau).
+        slot: { $ref: '#/components/schemas/SlotSummary' }
+        createdAt: { type: string, format: date-time }
+
+    PaymentHandle:
+      description: Éléments nécessaires au client pour autoriser le paiement. Jamais renvoyé par les GET.
+      type: object
+      required: [provider, paymentIntentId, clientSecret]
+      properties:
+        provider: { type: string, enum: [stripe] }
+        paymentIntentId: { type: string }
+        clientSecret: { type: string }
+
+    BookingCreateResponse:
+      type: object
+      required: [booking, payment]
+      properties:
+        booking: { $ref: '#/components/schemas/Booking' }
+        payment: { $ref: '#/components/schemas/PaymentHandle' }
+
+    BookingConfirmResponse:
+      type: object
+      required: [booking]
+      properties:
+        booking: { $ref: '#/components/schemas/Booking' }
+        suggestedAlert:
+          description: Renseigné en cas d'échec gracieux (« aucun débit »), pour le rebond alerte.
+          oneOf:
+            - { $ref: '#/components/schemas/AlertCreate' }
+            - { type: 'null' }
+
+    BookingPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Booking' }
+        nextCursor: { type: [string, 'null'] }
+
+    # ── Alerts ──
+    AlertPeriod:
+      description: Fenêtre temporelle optionnelle. Null/absent = à tout moment.
+      type: object
+      properties:
+        from: { type: [string, 'null'], format: date-time }
+        to: { type: [string, 'null'], format: date-time }
+    AlertCreate:
+      type: object
+      required: [categoryId, location, radiusMeters]
+      properties:
+        categoryId: { type: string }
+        subtypeId: { type: [string, 'null'] }
+        location: { $ref: '#/components/schemas/GeoPoint' }
+        radiusMeters: { type: integer, minimum: 100, maximum: 100000 }
+        period: { $ref: '#/components/schemas/AlertPeriod' }
+        maxPrice:
+          description: Plafond comparé au `pricePerSpot` (ADR 0015). Null = pas de plafond.
+          oneOf:
+            - { $ref: '#/components/schemas/Money' }
+            - { type: 'null' }
+      additionalProperties: false
+    Alert:
+      type: object
+      required: [id, categoryId, location, radiusMeters, createdAt]
+      properties:
+        id: { type: string }
+        categoryId: { type: string }
+        subtypeId: { type: [string, 'null'] }
+        location: { $ref: '#/components/schemas/GeoPoint' }
+        radiusMeters: { type: integer }
+        period: { $ref: '#/components/schemas/AlertPeriod' }
+        maxPrice:
+          oneOf:
+            - { $ref: '#/components/schemas/Money' }
+            - { type: 'null' }
+        createdAt: { type: string, format: date-time }
+
+    # ── Account ──
+    Me:
+      type: object
+      required: [id, firstName, phoneVerified, roles]
+      properties:
+        id: { type: string }
+        firstName:
+          type: string
+          description: Prénom (obligatoire, CONTEXT.md § Utilisateur).
+        phoneVerified:
+          type: boolean
+          description: Précondition au 1er paiement (ADR 0008).
+        roles:
+          type: array
+          items: { type: string, enum: [booker, partner, admin] }
+    PhoneVerificationStart:
+      type: object
+      required: [phoneNumber]
+      properties:
+        phoneNumber: { type: string, description: Format E.164. }
+      additionalProperties: false
+    PhoneVerificationStatus:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [pending] }
+    PhoneVerificationCheck:
+      type: object
+      required: [phoneNumber, code]
+      properties:
+        phoneNumber: { type: string }
+        code: { type: string }
+      additionalProperties: false
+
+    # ── Config ──
+    Config:
+      type: object
+      required: [stripePublishableKey]
+      properties:
+        stripePublishableKey: { type: string }
