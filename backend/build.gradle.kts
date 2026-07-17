@@ -24,7 +24,9 @@ dependencies {
 
     // Persistence + migrations (walking skeleton: DB must boot, Flyway must run)
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
-    implementation("org.flywaydb:flyway-core")
+    // Spring Boot 4 splits auto-configuration into per-technology modules: flyway-core alone
+    // is on the classpath but never runs without spring-boot-flyway.
+    implementation("org.springframework.boot:spring-boot-flyway")
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
 
