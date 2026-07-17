@@ -11,6 +11,8 @@ shared/openapi/src/generated/
 .gradle/
 backend/build/
 backend/.gradle/
+# Output of the IDE's Java language server (Eclipse/VS Code), not Gradle's
+backend/bin/
 
 # ── Expo / React Native ──
 .expo/
