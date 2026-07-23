@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: crenow-backend
+  datasource:
+    # Local dev defaults; override via env in every real environment.
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/crenow}
+    username: ${DATABASE_USERNAME:crenow}
+    password: ${DATABASE_PASSWORD:crenow}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  # The API contract advertises .../v1; the whole app lives under /v1 so paths match the spec.
+  servlet:
+    context-path: /v1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+crenow:
+  stripe:
+    # Non-secret publishable key. Dev placeholder; override via env (rotation, test↔live).
+    publishable-key: ${STRIPE_PUBLISHABLE_KEY:pk_test_crenow_dev_placeholder}

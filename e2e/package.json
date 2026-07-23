@@ -1,0 +1,21 @@
+{
+  "name": "@crenow/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end walking-skeleton smoke test: generated TS client -> running backend -> GET /config.",
+  "scripts": {
+    "pretest": "cd ../backend && ./gradlew bootJar -q",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@crenow/api-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

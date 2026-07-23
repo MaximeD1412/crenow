@@ -1,0 +1,9 @@
+packages:
+  - "shared/openapi"
+  - "apps/*"
+  - "e2e"
+allowBuilds:
+  '@openapitools/openapi-generator-cli': true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

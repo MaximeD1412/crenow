@@ -1,0 +1,22 @@
+{
+  "name": "crenow",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.13.1",
+  "description": "Crenow monorepo — backend (Gradle) + TS clients (pnpm/Turbo). See docs/adr/0007.",
+  "scripts": {
+    "generate:client": "pnpm --filter @crenow/api-client generate",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:e2e": "pnpm --filter @crenow/e2e test",
+    "backend:test": "cd backend && ./gradlew test",
+    "dev:db": "docker compose up -d db"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

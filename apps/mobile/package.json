@@ -1,0 +1,25 @@
+{
+  "name": "@crenow/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "description": "Crenow user app (Expo + React Native). Consumes the generated @crenow/api-client.",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crenow/api-client": "workspace:*",
+    "expo": "~57.0.6",
+    "expo-constants": "~57.0.5",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

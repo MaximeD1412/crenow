@@ -1,0 +1,26 @@
+{
+  "name": "@crenow/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typed TS client generated from shared/openapi/openapi.yaml (source of truth, ADR 0013).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "generate": "openapi-generator-cli generate -i ./openapi.yaml -g typescript-fetch -o ./src/generated --additional-properties=supportsES6=true --openapi-normalizer KEEP_ONLY_FIRST_TAG_IN_OPERATION=true",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist src/generated"
+  },
+  "devDependencies": {
+    "@openapitools/openapi-generator-cli": "^2.39.1",
+    "typescript": "^5.9.3"
+  }
+}
